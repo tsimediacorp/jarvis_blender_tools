@@ -8,6 +8,7 @@ import bpy
 import os
 import glob
 import time
+import shutil
 from bpy_extras.io_utils import ImportHelper
 from bpy.props import StringProperty
 
@@ -83,9 +84,19 @@ class BatchConvertXML(bpy.types.Operator, ImportHelper):
         os.makedirs(output_folder, exist_ok=True)
         
         xml_files = glob.glob(os.path.join(source_folder, "**", "*.xml"), recursive=True)
+        texture_files = glob.glob(os.path.join(source_folder, "**", "*.png"), recursive=True) + \
+                        glob.glob(os.path.join(source_folder, "**", "*.jpg"), recursive=True) + \
+                        glob.glob(os.path.join(source_folder, "**", "*.jpeg"), recursive=True) + \
+                        glob.glob(os.path.join(source_folder, "**", "*.tga"), recursive=True)
+        
         if not xml_files:
             self.report({'WARNING'}, "No XML files found in the selected folder.")
             return {'CANCELLED'}
+        
+        # Copy textures to Converted folder
+        for tex in texture_files:
+            shutil.copy(tex, output_folder)
+            self.report({'INFO'}, f"Copied texture: {tex}")
 
         for xml_file in xml_files:
             output_fbx = os.path.join(output_folder, os.path.splitext(os.path.basename(xml_file))[0] + ".fbx")
@@ -115,13 +126,13 @@ class BatchConvertXML(bpy.types.Operator, ImportHelper):
             
             # Export to FBX
             try:
-                bpy.ops.export_scene.fbx(filepath=output_fbx, use_selection=True)
+                bpy.ops.export_scene.fbx(filepath=output_fbx, use_selection=True, use_mesh_modifiers=False, path_mode='COPY')
                 self.report({'INFO'}, f"Converted {xml_file} to {output_fbx}")
             except Exception as e:
                 self.report({'ERROR'}, f"Failed to export {output_fbx}: {str(e)}")
                 continue
         
-        self.report({'INFO'}, "Batch conversion completed! Converted files are in the 'Converted' folder.")
+        self.report({'INFO'}, "Batch conversion completed! Converted files and textures are in the 'Converted' folder.")
         return {'FINISHED'}
 
 # Register classes
