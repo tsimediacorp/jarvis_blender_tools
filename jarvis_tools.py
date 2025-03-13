@@ -7,6 +7,7 @@ bl_info = {
 import bpy
 import os
 import glob
+import time
 from bpy_extras.io_utils import ImportHelper
 from bpy.props import StringProperty
 
@@ -49,6 +50,7 @@ class JarvisToolsPanel(bpy.types.Panel):
         box.operator("jarvis.pack_textures")
         
         # Batch Conversion Section
+        box = layout.box()
         box.label(text="Batch Conversion", icon='FILE_FOLDER')
         box.operator("jarvis.batch_convert_xml")
         
@@ -57,42 +59,69 @@ class JarvisToolsPanel(bpy.types.Panel):
         box.label(text="Export for Web", icon='WORLD')
         box.operator("jarvis.export_glb")
 
-class SimplifyTransparency(bpy.types.Operator):
-    """Break all Alpha Node Links in Materials"""
-    bl_idname = "jarvis.simplify_transparency"
-    bl_label = "Simplify Transparency"
+class BatchConvertXML(bpy.types.Operator, ImportHelper):
+    """Batch Convert .xml Files to .fbx or .obj"""
+    bl_idname = "jarvis.batch_convert_xml"
+    bl_label = "Batch Convert XML"
+    
+    directory: StringProperty(subtype='DIR_PATH')
 
     def execute(self, context):
-        for material in bpy.data.materials:
-            if material.use_nodes and material.node_tree:
-                for node in material.node_tree.nodes:
-                    if node.type == 'BSDF_PRINCIPLED':
-                        for link in material.node_tree.links:
-                            if link.to_socket == node.inputs['Alpha']:
-                                material.node_tree.links.remove(link)
+        source_folder = self.directory
+        if not source_folder:
+            self.report({'ERROR'}, "No source folder selected!")
+            return {'CANCELLED'}
         
-        self.report({'INFO'}, "Alpha nodes unlinked in all materials!")
-        return {'FINISHED'}
+        # Ensure Sollumz is installed and find the correct operator
+        time.sleep(1)  # Give Blender time to fully register add-ons
+        if not hasattr(bpy.ops.sollumz, "import_assets"):
+            self.report({'ERROR'}, "Sollumz import operator not found! Make sure the add-on is properly installed and enabled.")
+            return {'CANCELLED'}
+        
+        # Create the 'Converted' output folder
+        output_folder = os.path.join(source_folder, "Converted")
+        os.makedirs(output_folder, exist_ok=True)
+        
+        xml_files = glob.glob(os.path.join(source_folder, "**", "*.xml"), recursive=True)
+        if not xml_files:
+            self.report({'WARNING'}, "No XML files found in the selected folder.")
+            return {'CANCELLED'}
 
-class ExportGLB(bpy.types.Operator):
-    """Export scene to .glb format with Alpha fixes"""
-    bl_idname = "jarvis.export_glb"
-    bl_label = "Export GLB for Web"
-
-    def execute(self, context):
-        # Remove alpha nodes from all materials except basic_glass
-        for material in bpy.data.materials:
-            if material.name != "basic_glass" and material.node_tree:
-                for node in material.node_tree.nodes:
-                    if node.type == 'BSDF_PRINCIPLED':
-                        for link in material.node_tree.links:
-                            if link.to_socket.name == 'Alpha':
-                                material.node_tree.links.remove(link)
+        for xml_file in xml_files:
+            output_fbx = os.path.join(output_folder, os.path.splitext(os.path.basename(xml_file))[0] + ".fbx")
+            
+            # Switch to Object Mode
+            bpy.ops.object.mode_set(mode='OBJECT')
+            
+            # Import the XML file using Sollumz
+            try:
+                bpy.ops.sollumz.import_assets(filepath=xml_file)
+                bpy.context.view_layer.update()
+                
+                # Ensure all objects are selected after import
+                for obj in bpy.context.scene.objects:
+                    obj.select_set(True)
+                bpy.context.view_layer.objects.active = bpy.context.scene.objects[0] if bpy.context.scene.objects else None
+                
+                # Check if objects are imported
+                imported_objects = [obj for obj in bpy.context.scene.objects if obj.select_get()]
+                if not imported_objects:
+                    self.report({'WARNING'}, f"No objects detected from {xml_file} after import. Skipping export.")
+                    continue
+                
+            except Exception as e:
+                self.report({'ERROR'}, f"Failed to import {xml_file}: {str(e)}")
+                continue
+            
+            # Export to FBX
+            try:
+                bpy.ops.export_scene.fbx(filepath=output_fbx, use_selection=True)
+                self.report({'INFO'}, f"Converted {xml_file} to {output_fbx}")
+            except Exception as e:
+                self.report({'ERROR'}, f"Failed to export {output_fbx}: {str(e)}")
+                continue
         
-        # Open GLB export dialog
-        bpy.ops.export_scene.gltf(filepath="", export_format='GLB')
-        
-        self.report({'INFO'}, "GLB export completed!")
+        self.report({'INFO'}, "Batch conversion completed! Converted files are in the 'Converted' folder.")
         return {'FINISHED'}
 
 # Register classes
