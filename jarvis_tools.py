@@ -109,15 +109,19 @@ class BatchConvertXML(bpy.types.Operator, ImportHelper):
                 bpy.ops.sollumz.import_assets(filepath=xml_file)
                 bpy.context.view_layer.update()
                 
-                # Ensure all objects are selected after import
+                # Ensure all objects are selected after import, excluding collision geometry and rigs
                 for obj in bpy.context.scene.objects:
-                    obj.select_set(True)
+                    if "col" not in obj.name.lower() and obj.type not in {'ARMATURE'}:
+                        obj.select_set(True)
+                    else:
+                        obj.select_set(False)
+                
                 bpy.context.view_layer.objects.active = bpy.context.scene.objects[0] if bpy.context.scene.objects else None
                 
                 # Check if objects are imported
                 imported_objects = [obj for obj in bpy.context.scene.objects if obj.select_get()]
                 if not imported_objects:
-                    self.report({'WARNING'}, f"No objects detected from {xml_file} after import. Skipping export.")
+                    self.report({'WARNING'}, f"No valid objects detected from {xml_file} after import. Skipping export.")
                     continue
                 
             except Exception as e:
