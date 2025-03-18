@@ -362,7 +362,20 @@ class BatchConvertXML(bpy.types.Operator, ImportHelper):
             # Set an active object
             if new_objs:
                 context.view_layer.objects.active = new_objs[0]
-            
+
+            for mat in bpy.data.materials:
+                if mat.use_nodes and mat.node_tree:
+                    for node in mat.node_tree.nodes:
+                        if node.type == 'TEX_IMAGE' and node.image:
+                            img_name = os.path.basename(node.image.filepath_from_user())
+                            new_path = os.path.join(output_folder, img_name)
+                            if os.path.exists(new_path):
+                                node.image.filepath = new_path
+                                node.image.reload()
+                                if log_path:
+                                    with open(log_path, 'a') as log_file:
+                                        log_file.write(f"Updated texture for material {mat.name}: {new_path}\n")
+
             try:
                 if log_path:
                     with open(log_path, 'a') as log_file:
