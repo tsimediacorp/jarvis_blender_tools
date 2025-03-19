@@ -56,7 +56,7 @@ class JarvisToolsPanel(bpy.types.Panel):
         
         # Batch Conversion Section
         box = layout.box()
-        box.label(text="Batch Conversion", icon='FILE_FOLDER')
+        box.label(text="Batch Operations", icon='FILE_FOLDER')
         box.operator("jarvis.batch_convert_xml")
         
         # Export for Web
@@ -67,7 +67,7 @@ class JarvisToolsPanel(bpy.types.Panel):
 class BatchConvertXML(bpy.types.Operator, ImportHelper):
     """Batch Convert .xml Files to .fbx using Direct Sollumz Import"""
     bl_idname = "jarvis.batch_convert_xml"
-    bl_label = "Batch Convert XML"
+    bl_label = "Batch Convert GTA 5 XML"
     
     directory: StringProperty(subtype='DIR_PATH')
     
