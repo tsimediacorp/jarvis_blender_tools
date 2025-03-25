@@ -17,7 +17,6 @@ from bpy_extras.io_utils import ImportHelper
 from bpy.props import StringProperty, BoolProperty, IntProperty
 from importlib import import_module
 
-
 class JarvisToolsPanel(bpy.types.Panel):
     """Main panel for Jarvis Tools"""
     bl_label = "Jarvis Tools"
@@ -60,8 +59,10 @@ class JarvisToolsPanel(bpy.types.Panel):
         box = layout.box()
         box.label(text="Batch Conversion", icon='FILE_FOLDER')
         box.operator("jarvis.batch_convert_xml")
+        box.operator("jarvis.batch_convert_ydr")
         box.operator("jarvis.batch_convert_textures")
         box.operator("jarvis.batch_clean_model")
+        
         # Export for Web
         box = layout.box()
         box.label(text="Export for Web", icon='WORLD')
@@ -159,7 +160,10 @@ class BatchConvertXML(bpy.types.Operator, ImportHelper):
         os.makedirs(output_folder, exist_ok=True)
         
         # Find XML files
-        xml_files = glob.glob(os.path.join(source_folder, "**", "*.yft.xml"), recursive=True)
+        xml_files = ( 
+            glob.glob(os.path.join(source_folder, "**", "*.yft.xml"), recursive=True) +
+            glob.glob(os.path.join(source_folder, "**", "*.ydr"), recursive=True)
+            )
         texture_files = (
             glob.glob(os.path.join(source_folder, "**", "*.png"), recursive=True) +
             glob.glob(os.path.join(source_folder, "**", "*.jpg"), recursive=True) +
@@ -694,6 +698,288 @@ class BatchCleanModel(bpy.types.Operator, ImportHelper):
         return {'FINISHED'}
 
 
+
+class BatchConvertYDR(bpy.types.Operator, ImportHelper):
+    """Batch Convert YDR .xml Files to .fbx using Direct Sollumz Import for YDR files"""
+    bl_idname = "jarvis.batch_convert_ydr"
+    bl_label = "Batch Convert YDR"
+    
+    directory: StringProperty(subtype='DIR_PATH')
+    
+    filter_glob: StringProperty(
+        default="*.ydr.xml",
+        options={'HIDDEN'},
+    )
+    
+    wait_time: IntProperty(
+        name="Wait Time (seconds)",
+        description="Time to wait after import to ensure processing completes",
+        default=2,
+        min=0,
+        max=10
+    )
+    
+    debug_mode: BoolProperty(
+        name="Debug Mode",
+        description="Create a detailed log file to diagnose issues",
+        default=True
+    )
+    
+    def safe_delete_all(self, context):
+        """Safely delete all objects in the scene."""
+        try:
+            if context.object and context.object.mode != 'OBJECT':
+                bpy.ops.object.mode_set(mode='OBJECT')
+            for obj in context.scene.objects:
+                obj.select_set(True)
+            if any(obj.select_get() for obj in context.scene.objects):
+                bpy.ops.object.delete()
+            return True
+        except Exception as e:
+            if self.debug_mode:
+                print(f"Error in safe_delete_all: {str(e)}")
+            return False
+    
+    def execute(self, context):
+        source_folder = self.directory
+        if not source_folder:
+            self.report({'ERROR'}, "No source folder selected!")
+            return {'CANCELLED'}
+        
+        # Create a debug log if needed.
+        log_path = None
+        if self.debug_mode:
+            log_path = os.path.join(source_folder, "ydr_conversion_log.txt")
+            with open(log_path, 'w') as log_file:
+                log_file.write("Batch Convert YDR Log\n")
+                log_file.write("======================\n")
+                log_file.write(f"Started: {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+                log_file.write(f"Blender version: {bpy.app.version_string}\n")
+                log_file.write(f"Wait time: {self.wait_time} seconds\n\n")
+        
+        # Import the necessary Sollumz modules for YDR
+        try:
+            sollumz_module = importlib.import_module("bl_ext.user_default.sollumz")
+            # Import YDR importer components (adjust paths as needed)
+            YDR = sollumz_module.cwxml.drawable.YDR
+            create_drawable_obj = sollumz_module.ydr.ydrimport.create_drawable_obj
+            if log_path:
+                with open(log_path, 'a') as log_file:
+                    log_file.write("Successfully imported YDR modules from Sollumz\n")
+        except Exception as e:
+            error_msg = f"Failed to import YDR modules: {str(e)}"
+            self.report({'ERROR'}, error_msg)
+            if log_path:
+                with open(log_path, 'a') as log_file:
+                    log_file.write("ERROR: " + error_msg + "\n")
+                    log_file.write("TRACE: " + traceback.format_exc() + "\n")
+            return {'CANCELLED'}
+        
+        # Optional: check for Sollumz import functionality if needed.
+        if not hasattr(bpy.ops.sollumz, "import_assets"):
+            self.report({'ERROR'}, "Sollumz import_assets operator not found! Ensure the add-on is properly installed and enabled.")
+            return {'CANCELLED'}
+        
+        # Create output folder for converted FBX files
+        output_folder = os.path.join(source_folder, "Converted_YDR")
+        os.makedirs(output_folder, exist_ok=True)
+        
+        # Find all YDR XML files
+        xml_files = glob.glob(os.path.join(source_folder, "**", "*.ydr.xml"), recursive=True)
+        
+        if not xml_files:
+            self.report({'WARNING'}, "No YDR XML files found in the selected folder.")
+            return {'CANCELLED'}
+        
+        if log_path:
+            with open(log_path, 'a') as log_file:
+                log_file.write(f"\nFound {len(xml_files)} YDR XML files to process:\n")
+                for xml in xml_files:
+                    log_file.write(f"  - {xml}\n")
+        
+        success_count = 0
+        error_count = 0
+        
+        # Process each YDR XML file
+        for xml_file in xml_files:
+            if log_path:
+                with open(log_path, 'a') as log_file:
+                    log_file.write("\n" + "="*50 + "\n")
+                    log_file.write(f"Processing: {xml_file}\n")
+                    log_file.write("="*50 + "\n")
+            
+            # Set output FBX filename
+            base_filename = os.path.splitext(os.path.basename(xml_file))[0]
+            # Remove trailing .ydr if present
+            if base_filename.endswith(".ydr"):
+                base_filename = base_filename[:-4]
+            output_fbx = os.path.join(output_folder, base_filename + ".fbx")
+            self.report({'INFO'}, f"Processing file: {xml_file}")
+            
+            # Clear scene
+            self.safe_delete_all(context)
+            for coll in list(bpy.data.collections):
+                bpy.data.collections.remove(coll)
+            for block in list(bpy.data.meshes):
+                if block.users == 0:
+                    bpy.data.meshes.remove(block)
+            for block in list(bpy.data.materials):
+                if block.users == 0:
+                    bpy.data.materials.remove(block)
+            for block in list(bpy.data.textures):
+                if block.users == 0:
+                    bpy.data.textures.remove(block)
+            for block in list(bpy.data.images):
+                if block.users == 0:
+                    bpy.data.images.remove(block)
+            bpy.context.view_layer.update()
+            
+            # Record existing objects
+            existing_objs = set(bpy.data.objects)
+            existing_meshes = set(bpy.data.meshes)
+            existing_collections = set(bpy.data.collections)
+            
+            if log_path:
+                with open(log_path, 'a') as log_file:
+                    log_file.write(f"Before import - Objects: {len(existing_objs)}, ")
+                    log_file.write(f"Meshes: {len(existing_meshes)}, ")
+                    log_file.write(f"Collections: {len(existing_collections)}\n")
+            
+            # Attempt import using YDR importer
+            imported_obj = None
+            try:
+                # Optionally skip files with "_hi" if desired
+                if "_hi" in xml_file.lower():
+                    if log_path:
+                        with open(log_path, 'a') as log_file:
+                            log_file.write("Skipping _hi file\n")
+                    continue
+                
+                # Use the YDR importer
+                name = os.path.splitext(os.path.basename(xml_file))[0]
+                ydr_data = YDR.from_xml_file(xml_file)
+                imported_obj = create_drawable_obj(ydr_data, xml_file, name)
+                
+                if imported_obj:
+                    if log_path:
+                        with open(log_path, 'a') as log_file:
+                            log_file.write(f"Import succeeded, created object: {imported_obj.name}\n")
+                else:
+                    if log_path:
+                        with open(log_path, 'a') as log_file:
+                            log_file.write("Importer returned None object\n")
+                
+                if self.wait_time > 0:
+                    if log_path:
+                        with open(log_path, 'a') as log_file:
+                            log_file.write(f"Waiting {self.wait_time} seconds for import to complete...\n")
+                    time.sleep(self.wait_time)
+                bpy.context.view_layer.update()
+            
+            except Exception as e:
+                error_msg = f"Failed to import {xml_file}: {str(e)}"
+                self.report({'ERROR'}, error_msg)
+                if log_path:
+                    with open(log_path, 'a') as log_file:
+                        log_file.write("ERROR: " + error_msg + "\n")
+                        log_file.write("TRACE: " + traceback.format_exc() + "\n")
+                error_count += 1
+                continue
+            
+            # Record newly imported objects
+            new_objs = [obj for obj in bpy.data.objects if obj not in existing_objs]
+            new_meshes = [mesh for mesh in bpy.data.meshes if mesh not in existing_meshes]
+            new_collections = [coll for coll in bpy.data.collections if coll not in existing_collections]
+            
+            if log_path:
+                with open(log_path, 'a') as log_file:
+                    log_file.write(f"After import - Objects: {len(bpy.data.objects)}, ")
+                    log_file.write(f"Meshes: {len(bpy.data.meshes)}, ")
+                    log_file.write(f"Collections: {len(bpy.data.collections)}\n")
+                    log_file.write(f"New objects: {len(new_objs)}, ")
+                    log_file.write(f"New meshes: {len(new_meshes)}, ")
+                    log_file.write(f"New collections: {len(new_collections)}\n\n")
+                    log_file.write("Objects in scene:\n")
+                    for obj in bpy.context.scene.objects:
+                        log_file.write(f"  - {obj.name} (Type: {obj.type})\n")
+            
+            self.report({'INFO'}, f"After import of {xml_file}: {len(new_objs)} new objects detected.")
+            
+            # If necessary, create objects for orphaned meshes
+            if not new_objs and new_meshes:
+                if log_path:
+                    with open(log_path, 'a') as log_file:
+                        log_file.write("No new objects but found new meshes. Creating objects for them...\n")
+                for mesh in new_meshes:
+                    obj = bpy.data.objects.new(f"{base_filename}_{mesh.name}", mesh)
+                    bpy.context.scene.collection.objects.link(obj)
+                    new_objs.append(obj)
+            
+            for coll in new_collections:
+                for obj in coll.objects:
+                    if obj not in new_objs:
+                        new_objs.append(obj)
+            
+            if not new_objs:
+                self.report({'WARNING'}, f"No objects imported from {xml_file}. Skipping export.")
+                if log_path:
+                    with open(log_path, 'a') as log_file:
+                        log_file.write("WARNING: No objects imported. Skipping export.\n")
+                error_count += 1
+                continue
+            
+            for obj in new_objs:
+                obj.hide_set(False)
+                obj.hide_viewport = False
+                obj.hide_render = False
+            
+            for obj in bpy.context.scene.objects:
+                obj.select_set(obj in new_objs)
+            
+            if new_objs:
+                context.view_layer.objects.active = new_objs[0]
+            
+            try:
+                if log_path:
+                    with open(log_path, 'a') as log_file:
+                        log_file.write(f"Exporting to: {output_fbx}\n")
+                        log_file.write(f"Selected objects: {len([obj for obj in bpy.context.scene.objects if obj.select_get()])}\n")
+                
+                bpy.ops.export_scene.fbx(
+                    filepath=output_fbx,
+                    use_selection=True,
+                    use_mesh_modifiers=False,
+                    path_mode='COPY',
+                    embed_textures=True,
+                    mesh_smooth_type='FACE'
+                )
+                self.report({'INFO'}, f"Converted {xml_file} to {output_fbx}")
+                success_count += 1
+                if log_path:
+                    with open(log_path, 'a') as log_file:
+                        log_file.write(f"SUCCESS: Exported to {output_fbx}\n")
+            except Exception as e:
+                error_msg = f"Failed to export {output_fbx}: {str(e)}"
+                self.report({'ERROR'}, error_msg)
+                if log_path:
+                    with open(log_path, 'a') as log_file:
+                        log_file.write(f"ERROR: {error_msg}\n")
+                        log_file.write("TRACE: " + traceback.format_exc() + "\n")
+                error_count += 1
+        
+        if log_path:
+            with open(log_path, 'a') as log_file:
+                log_file.write(f"\n\nConversion Summary:\n")
+                log_file.write(f"Completed at: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                log_file.write(f"Total files processed: {len(xml_files)}\n")
+                log_file.write(f"Successful conversions: {success_count}\n")
+                log_file.write(f"Failed conversions: {error_count}\n")
+        
+        self.report({'INFO'}, f"Batch conversion completed! {success_count} files converted, {error_count} failed.")
+        return {'FINISHED'}
+
+
+
 # Register classes
 classes = [
     JarvisToolsPanel,
@@ -702,6 +988,7 @@ classes = [
     SimplifyTransparency,
     BatchConvertTextures,
     BatchCleanModel,
+    BatchConvertYDR,
 ]
 
 def register():
@@ -714,28 +1001,3 @@ def unregister():
 
 if __name__ == "__main__":
     register()
-
-def try_import_pillow():
-    try:
-        from PIL import Image
-        return Image
-    except ImportError:
-        try:
-            # Use Blender's Python executable instead of sys.executable
-            python_exe = bpy.app.binary_path_python
-            
-            # First upgrade pip
-            subprocess.check_call([python_exe, "-m", "pip", "install", "--upgrade", "pip"])
-            
-            # Then install Pillow
-            subprocess.check_call([python_exe, "-m", "pip", "install", "--user", "Pillow"])
-            
-            # Try importing again
-            from PIL import Image
-            return Image
-        except subprocess.CalledProcessError as e:
-            print(f"Failed to install Pillow: {str(e)}")
-            raise ImportError("Failed to install Pillow package")
-        except Exception as e:
-            print(f"Error during Pillow import/installation: {str(e)}")
-            raise ImportError(f"Error during Pillow import/installation: {str(e)}")
