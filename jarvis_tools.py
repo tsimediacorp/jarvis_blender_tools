@@ -12,9 +12,11 @@ import shutil
 import traceback
 import importlib
 import sys
+import subprocess
 from bpy_extras.io_utils import ImportHelper
 from bpy.props import StringProperty, BoolProperty, IntProperty
 from importlib import import_module
+
 
 class JarvisToolsPanel(bpy.types.Panel):
     """Main panel for Jarvis Tools"""
@@ -56,9 +58,10 @@ class JarvisToolsPanel(bpy.types.Panel):
         
         # Batch Conversion Section
         box = layout.box()
-        box.label(text="Batch Operations", icon='FILE_FOLDER')
+        box.label(text="Batch Conversion", icon='FILE_FOLDER')
         box.operator("jarvis.batch_convert_xml")
-        
+        box.operator("jarvis.batch_convert_textures")
+        box.operator("jarvis.batch_clean_model")
         # Export for Web
         box = layout.box()
         box.label(text="Export for Web", icon='WORLD')
@@ -67,7 +70,7 @@ class JarvisToolsPanel(bpy.types.Panel):
 class BatchConvertXML(bpy.types.Operator, ImportHelper):
     """Batch Convert .xml Files to .fbx using Direct Sollumz Import"""
     bl_idname = "jarvis.batch_convert_xml"
-    bl_label = "Batch Convert GTA 5 XML"
+    bl_label = "Batch Convert XML"
     
     directory: StringProperty(subtype='DIR_PATH')
     
@@ -362,20 +365,7 @@ class BatchConvertXML(bpy.types.Operator, ImportHelper):
             # Set an active object
             if new_objs:
                 context.view_layer.objects.active = new_objs[0]
-
-            for mat in bpy.data.materials:
-                if mat.use_nodes and mat.node_tree:
-                    for node in mat.node_tree.nodes:
-                        if node.type == 'TEX_IMAGE' and node.image:
-                            img_name = os.path.basename(node.image.filepath_from_user())
-                            new_path = os.path.join(output_folder, img_name)
-                            if os.path.exists(new_path):
-                                node.image.filepath = new_path
-                                node.image.reload()
-                                if log_path:
-                                    with open(log_path, 'a') as log_file:
-                                        log_file.write(f"Updated texture for material {mat.name}: {new_path}\n")
-
+            
             try:
                 if log_path:
                     with open(log_path, 'a') as log_file:
@@ -465,6 +455,244 @@ class SimplifyTransparency(bpy.types.Operator):
                         self.report({'INFO'}, f"Fixed transparency for {material.name}")
 
         return {'FINISHED'}
+    
+
+#[FUNCTION] Batch Convert Textures
+class BatchConvertTextures(bpy.types.Operator, ImportHelper):
+    """Batch convert all .dds textures to .png in a folder tree,
+    replicating the folder structure in a 'Converted Textures' folder."""
+    bl_idname = "jarvis.batch_convert_textures"
+    bl_label = "Batch Convert Textures"
+    
+    directory: StringProperty(subtype='DIR_PATH')
+    
+    debug_mode: BoolProperty(
+        name="Debug Mode",
+        description="Create a detailed log file to diagnose issues",
+        default=True
+        # type: ignore
+    )
+    
+    def convert_dds_to_png(self, src_folder, out_folder):
+        total = 0
+        converted = 0
+        failed = 0
+        for root, dirs, files in os.walk(src_folder):
+            for file in files:
+                if file.lower().endswith('.dds'):
+                    total += 1
+                    src_path = os.path.join(root, file)
+                    # Calculate relative path from the source folder
+                    rel_path = os.path.relpath(root, src_folder)
+                    target_dir = os.path.join(out_folder, rel_path)
+                    os.makedirs(target_dir, exist_ok=True)
+                    # Build output filename with .png extension
+                    out_file = os.path.join(target_dir, os.path.splitext(file)[0] + ".png")
+                    self.report({'INFO'}, f"Processing {src_path} ...")
+                    try:
+                        img = Image.open(src_path)
+                        img.save(out_file, "PNG")
+                        self.report({'INFO'}, f"Converted: {src_path} -> {out_file}")
+                        converted += 1
+                    except Exception as e:
+                        self.report({'ERROR'}, f"Failed to convert {src_path}: {e}")
+                        failed += 1
+        self.report({'INFO'}, f"Conversion Summary: Total: {total}, Converted: {converted}, Failed: {failed}")
+
+    def execute(self, context):
+        src_folder = self.directory
+        if not src_folder:
+            self.report({'ERROR'}, "No source folder selected!")
+            return {'CANCELLED'}
+        
+        out_folder = os.path.join(src_folder, "Converted_Textures")
+        os.makedirs(out_folder, exist_ok=True)
+        
+        self.convert_dds_to_png(src_folder, out_folder)
+        return {'FINISHED'}
+    
+
+#[FUNCTION] Batch Clean Model
+class BatchCleanModel(bpy.types.Operator, ImportHelper):
+    """Batch Clean Model:
+    Processes every FBX file in the selected source folder,
+    cleans the scene to keep only the valid base mesh group (name ending in '.mesh' but not containing '.damaged.mesh') 
+    and its children, and exports the result to a 'Cleaned' folder.
+    """
+    bl_idname = "jarvis.batch_clean_model"
+    bl_label = "Batch Clean Model"
+
+    # Use ImportHelper to prompt for a directory.
+    directory: StringProperty(subtype='DIR_PATH')
+    filter_glob: StringProperty(default="*.fbx", options={'HIDDEN'})
+
+    wait_time: IntProperty(
+        name="Wait Time (seconds)",
+        description="Time to wait after import to ensure processing completes",
+        default=2,
+        min=0,
+        max=10
+    )
+    
+    debug_mode: BoolProperty(
+        name="Debug Mode",
+        description="Create a detailed log file to diagnose issues",
+        default=True
+    )
+    
+    def safe_delete_all(self, context):
+        """Safely delete all objects in the scene."""
+        try:
+            if context.object and context.object.mode != 'OBJECT':
+                bpy.ops.object.mode_set(mode='OBJECT')
+            for obj in context.scene.objects:
+                obj.select_set(True)
+            if any(obj.select_get() for obj in context.scene.objects):
+                bpy.ops.object.delete()
+            return True
+        except Exception as e:
+            if self.debug_mode:
+                print(f"Error in safe_delete_all: {e}")
+            return False
+
+    def execute(self, context):
+        source_folder = self.directory
+        if not source_folder:
+            self.report({'ERROR'}, "No source folder selected!")
+            return {'CANCELLED'}
+        
+        # Create log file if debug mode is enabled.
+        log_path = None
+        if self.debug_mode:
+            log_path = os.path.join(source_folder, "batch_clean_log.txt")
+            with open(log_path, 'w') as log_file:
+                log_file.write("Jarvis Tools Batch Clean Log\n")
+                log_file.write("=============================\n\n")
+                log_file.write(f"Started cleaning at: {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+                log_file.write(f"Blender version: {bpy.app.version_string}\n")
+                log_file.write(f"Wait time: {self.wait_time} seconds\n\n")
+        
+        # Create output folder "Cleaned" inside the source folder.
+        cleaned_folder = os.path.join(source_folder, "Cleaned")
+        os.makedirs(cleaned_folder, exist_ok=True)
+        
+        # Find FBX files in the source folder.
+        fbx_files = glob.glob(os.path.join(source_folder, "**", "*.fbx"), recursive=True)
+        if not fbx_files:
+            self.report({'WARNING'}, "No FBX files found in the selected folder.")
+            return {'CANCELLED'}
+        
+        if log_path:
+            with open(log_path, 'a') as log_file:
+                log_file.write(f"Found {len(fbx_files)} FBX files to process.\n")
+        
+        success_count = 0
+        error_count = 0
+        
+        for fbx_file in fbx_files:
+            if log_path:
+                with open(log_path, 'a') as log_file:
+                    log_file.write("\n" + "="*50 + "\n")
+                    log_file.write(f"Processing: {fbx_file}\n")
+                    log_file.write("="*50 + "\n")
+            
+            # Define output filename for cleaned FBX.
+            base_filename = os.path.splitext(os.path.basename(fbx_file))[0]
+            output_fbx = os.path.join(cleaned_folder, base_filename + ".fbx")
+            
+            self.report({'INFO'}, f"Processing file: {fbx_file}")
+            
+            # Clear scene.
+            self.safe_delete_all(context)
+            for coll in list(bpy.data.collections):
+                bpy.data.collections.remove(coll)
+            for block in list(bpy.data.meshes):
+                if block.users == 0:
+                    bpy.data.meshes.remove(block)
+            for block in list(bpy.data.materials):
+                if block.users == 0:
+                    bpy.data.materials.remove(block)
+            for block in list(bpy.data.textures):
+                if block.users == 0:
+                    bpy.data.textures.remove(block)
+            for block in list(bpy.data.images):
+                if block.users == 0:
+                    bpy.data.images.remove(block)
+            bpy.context.view_layer.update()
+            
+            # Import the FBX file.
+            try:
+                bpy.ops.import_scene.fbx(filepath=fbx_file)
+                if self.wait_time > 0:
+                    time.sleep(self.wait_time)
+                bpy.context.view_layer.update()
+            except Exception as e:
+                error_msg = f"Failed to import {fbx_file}: {e}"
+                self.report({'ERROR'}, error_msg)
+                if log_path:
+                    with open(log_path, 'a') as log_file:
+                        log_file.write("ERROR: " + error_msg + "\n")
+                        log_file.write("TRACE: " + traceback.format_exc() + "\n")
+                error_count += 1
+                continue
+            
+            # --- CLEANING STEP ---
+            # Collect valid base mesh groups (name ending with '.mesh' and not containing '.damaged.mesh')
+            # and all of their children.
+            objects_to_keep = set()
+            for obj in bpy.data.objects:
+                name_lower = obj.name.lower().strip()
+                if name_lower.endswith(".mesh") and ".damaged.mesh" not in name_lower:
+                    objects_to_keep.add(obj)
+                    for child in obj.children_recursive:
+                        objects_to_keep.add(child)
+            
+            # Remove all objects not in the keep set.
+            objects_to_remove = [obj for obj in list(bpy.data.objects) if obj not in objects_to_keep]
+            for obj in objects_to_remove:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            if log_path:
+                with open(log_path, 'a') as log_file:
+                    log_file.write(f"Cleaned: kept {len(objects_to_keep)} objects, removed {len(objects_to_remove)} objects\n")
+            # --- END CLEANING STEP ---
+            
+            # Select remaining objects for export.
+            for obj in bpy.data.objects:
+                obj.select_set(True)
+            if bpy.data.objects:
+                context.view_layer.objects.active = bpy.data.objects[0]
+            
+            try:
+                if log_path:
+                    with open(log_path, 'a') as log_file:
+                        log_file.write(f"Exporting cleaned model to: {output_fbx}\n")
+                bpy.ops.export_scene.fbx(
+                    filepath=output_fbx,
+                    use_selection=True,
+                    use_mesh_modifiers=False,
+                    path_mode='COPY',
+                    embed_textures=True,
+                    mesh_smooth_type='FACE'
+                )
+                self.report({'INFO'}, f"Cleaned and exported {fbx_file} to {output_fbx}")
+                success_count += 1
+            except Exception as e:
+                error_msg = f"Failed to export {output_fbx}: {e}"
+                self.report({'ERROR'}, error_msg)
+                if log_path:
+                    with open(log_path, 'a') as log_file:
+                        log_file.write("ERROR: " + error_msg + "\n")
+                        log_file.write("TRACE: " + traceback.format_exc() + "\n")
+                error_count += 1
+        
+        if log_path:
+            with open(log_path, 'a') as log_file:
+                log_file.write("\n\nBatch Clean Summary:\n")
+                log_file.write(f"Successful: {success_count}\n")
+                log_file.write(f"Failed: {error_count}\n")
+        self.report({'INFO'}, f"Batch cleaning completed! {success_count} cleaned, {error_count} failed.")
+        return {'FINISHED'}
+
 
 # Register classes
 classes = [
@@ -472,6 +700,8 @@ classes = [
     BatchConvertXML,
     ExportGLB,
     SimplifyTransparency,
+    BatchConvertTextures,
+    BatchCleanModel,
 ]
 
 def register():
@@ -484,3 +714,28 @@ def unregister():
 
 if __name__ == "__main__":
     register()
+
+def try_import_pillow():
+    try:
+        from PIL import Image
+        return Image
+    except ImportError:
+        try:
+            # Use Blender's Python executable instead of sys.executable
+            python_exe = bpy.app.binary_path_python
+            
+            # First upgrade pip
+            subprocess.check_call([python_exe, "-m", "pip", "install", "--upgrade", "pip"])
+            
+            # Then install Pillow
+            subprocess.check_call([python_exe, "-m", "pip", "install", "--user", "Pillow"])
+            
+            # Try importing again
+            from PIL import Image
+            return Image
+        except subprocess.CalledProcessError as e:
+            print(f"Failed to install Pillow: {str(e)}")
+            raise ImportError("Failed to install Pillow package")
+        except Exception as e:
+            print(f"Error during Pillow import/installation: {str(e)}")
+            raise ImportError(f"Error during Pillow import/installation: {str(e)}")
